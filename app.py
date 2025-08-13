@@ -356,20 +356,30 @@ def plot_to_base64(max_bytes=100000):
 
 
 # -----------------------------
-# LLM agent setup
+# LLM agent setup (lazy initialization)
 # -----------------------------
-llm = ChatGoogleGenerativeAI(
-    model=os.getenv("GOOGLE_MODEL", "gemini-2.5-pro"),
-    temperature=0,
-    google_api_key=os.getenv("GOOGLE_API_KEY")
-)
+def get_llm():
+    """Get or create the LLM instance"""
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError("GOOGLE_API_KEY environment variable is not set")
+    
+    return ChatGoogleGenerativeAI(
+        model=os.getenv("GOOGLE_MODEL", "gemini-1.5-pro"),
+        temperature=0,
+        google_api_key=api_key
+    )
 
-# Tools list for agent (LangChain tool decorator returns metadata for the LLM)
-tools = [scrape_url_to_dataframe]  # we only expose scraping as a tool; agent will still produce code
+def get_agent_executor():
+    """Get or create the agent executor"""
+    llm = get_llm()
+    
+    # Tools list for agent (LangChain tool decorator returns metadata for the LLM)
+    tools = [scrape_url_to_dataframe]  # we only expose scraping as a tool; agent will still produce code
 
-# Prompt: instruct agent to call the tool and output JSON only
-prompt = ChatPromptTemplate.from_messages([
-    ("system", """You are a full-stack autonomous data analyst agent.
+    # Prompt: instruct agent to call the tool and output JSON only
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """You are a full-stack autonomous data analyst agent.
 
 You will receive:
 - A set of **rules** for this request (these rules may differ depending on whether a dataset is uploaded or not)
@@ -388,25 +398,25 @@ You must:
 5. When returning plots, always use `plot_to_base64()` to keep image sizes small.
 6. Make sure all variables are defined before use, and the code can run without any undefined references.
 """),
-    ("human", "{input}"),
-    MessagesPlaceholder(variable_name="agent_scratchpad"),
-])
+        ("human", "{input}"),
+        MessagesPlaceholder(variable_name="agent_scratchpad"),
+    ])
 
-agent = create_tool_calling_agent(
-    llm=llm,
-    tools=[scrape_url_to_dataframe],  # let the agent call tools if it wants; we will also pre-process scrapes
-    prompt=prompt
-)
+    agent = create_tool_calling_agent(
+        llm=llm,
+        tools=[scrape_url_to_dataframe],  # let the agent call tools if it wants; we will also pre-process scrapes
+        prompt=prompt
+    )
 
-agent_executor = AgentExecutor(
-    agent=agent,
-    tools=[scrape_url_to_dataframe],
-    verbose=True,
-    max_iterations=3,
-    early_stopping_method="generate",
-    handle_parsing_errors=True,
-    return_intermediate_steps=False
-)
+    return AgentExecutor(
+        agent=agent,
+        tools=[scrape_url_to_dataframe],
+        verbose=True,
+        max_iterations=3,
+        early_stopping_method="generate",
+        handle_parsing_errors=True,
+        return_intermediate_steps=False
+    )
 
 
 from fastapi import Request, HTTPException
@@ -560,6 +570,7 @@ def run_agent_safely_unified(llm_input: str, pickle_path: str = None) -> Dict:
     - If no pickle_path, falls back to scraping when needed.
     """
     try:
+        agent_executor = get_agent_executor()
         response = agent_executor.invoke({"input": llm_input}, {"timeout": LLM_TIMEOUT_SECONDS})
         raw_out = response.get("output") or response.get("final_output") or response.get("text") or ""
         if not raw_out:
@@ -629,6 +640,15 @@ async def serve_index():
             return HTMLResponse(content=f.read())
     except FileNotFoundError:
         raise HTTPException(404, "index.html file not found")
+
+@app.get("/health", include_in_schema=False)
+async def health_check():
+    """Health check endpoint that doesn't require API keys."""
+    return JSONResponse({
+        "status": "healthy",
+        "message": "TDS Data Analyst Agent is running",
+        "timestamp": "2025-08-13"
+    })
 
 @app.get("/api", include_in_schema=False)
 async def analyze_get_info():
