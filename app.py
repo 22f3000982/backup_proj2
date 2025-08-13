@@ -426,7 +426,7 @@ CRITICAL JSON FORMATTING RULES:
 - Use double quotes for all strings, never single quotes
 - No trailing commas
 - No comments in JSON
-- Start response with { and end with }
+- Start response with {{ and end with }}
 - Do not wrap in markdown code blocks
 
 4. Your Python code will run in a sandbox with:
@@ -436,10 +436,10 @@ CRITICAL JSON FORMATTING RULES:
 6. Make sure all variables are defined before use, and the code can run without any undefined references.
 
 Example valid response format:
-{
+{{
   "questions": ["What is the average?", "Show a plot"],
-  "code": "results['What is the average?'] = df['column'].mean()\nplt.figure()\nplt.plot(df['x'], df['y'])\nresults['Show a plot'] = plot_to_base64()"
-}
+  "code": "results['What is the average?'] = df['column'].mean()\\nplt.figure()\\nplt.plot(df['x'], df['y'])\\nresults['Show a plot'] = plot_to_base64()"
+}}
 """),
         ("human", "{input}"),
         MessagesPlaceholder(variable_name="agent_scratchpad"),
