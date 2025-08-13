@@ -178,13 +178,22 @@ python app.py
 ```
 
 ### Production Deployment
-1. Set up a production server (AWS, GCP, Azure, etc.)
-2. Install dependencies: `pip install -r requirements.txt`
-3. Configure environment variables
-4. Use a production WSGI server like Gunicorn:
-   ```bash
-   gunicorn app:app -w 4 -k uvicorn.workers.UvicornWorker
-   ```
+
+#### Render Deployment
+1. Connect your GitHub repository to Render
+2. Create a new Web Service
+3. Use the following settings:
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `gunicorn app:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT`
+4. Set environment variables:
+   - `GOOGLE_API_KEY`: Your Google Generative AI API key
+   - `LLM_TIMEOUT_SECONDS`: 150
+
+#### Other Platforms
+For other platforms, use a production WSGI server like Gunicorn:
+```bash
+gunicorn app:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
+```
 
 ### Docker Deployment
 ```dockerfile
