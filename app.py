@@ -365,7 +365,7 @@ def get_llm():
         raise ValueError("GOOGLE_API_KEY environment variable is not set")
     
     return ChatGoogleGenerativeAI(
-        model=os.getenv("GOOGLE_MODEL", "gemini-1.5-pro"),
+        model=os.getenv("GOOGLE_MODEL", "gemini-1.5-flash"),  # Use flash model to reduce quota usage
         temperature=0,
         google_api_key=api_key
     )
@@ -649,6 +649,11 @@ async def health_check():
         "message": "TDS Data Analyst Agent is running",
         "timestamp": "2025-08-13"
     })
+
+@app.get("/health")
+async def health_check():
+    """Simple health check endpoint for deployment"""
+    return {"status": "healthy", "message": "TDS Data Analyst Agent is running"}
 
 @app.get("/api", include_in_schema=False)
 async def analyze_get_info():
