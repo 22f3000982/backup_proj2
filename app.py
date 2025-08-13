@@ -156,28 +156,57 @@ def clean_llm_output(output: str) -> Dict:
     try:
         if not output:
             return {"error": "Empty LLM output"}
-        # remove triple-fence markers if present
-        s = re.sub(r"^```(?:json)?\s*", "", output.strip())
-        s = re.sub(r"\s*```$", "", s)
-        # find outermost JSON object by scanning for balanced braces
-        first = s.find("{")
-        last = s.rfind("}")
-        if first == -1 or last == -1 or last <= first:
-            return {"error": "No JSON object found in LLM output", "raw": s}
-        candidate = s[first:last+1]
+        
+        # Clean the output
+        s = output.strip()
+        
+        # Remove markdown code blocks
+        s = re.sub(r"^```(?:json)?\s*", "", s, flags=re.MULTILINE)
+        s = re.sub(r"\s*```$", "", s, flags=re.MULTILINE)
+        
+        # Remove any text before the first {
+        first_brace = s.find("{")
+        if first_brace > 0:
+            s = s[first_brace:]
+        
+        # Remove any text after the last }
+        last_brace = s.rfind("}")
+        if last_brace != -1 and last_brace < len(s) - 1:
+            s = s[:last_brace + 1]
+        
+        if not s.startswith("{") or not s.endswith("}"):
+            return {"error": "No valid JSON object found in LLM output", "raw": s[:200]}
+        
+        # Try to fix common JSON issues
+        # Fix single quotes to double quotes
+        s = re.sub(r"'([^']*)':", r'"\1":', s)  # Fix keys
+        s = re.sub(r":\s*'([^']*)'", r': "\1"', s)  # Fix string values
+        
+        # Fix trailing commas
+        s = re.sub(r",\s*}", "}", s)
+        s = re.sub(r",\s*]", "]", s)
+        
         try:
-            return json.loads(candidate)
-        except Exception as e:
-            # fallback: try last balanced pair scanning backwards
-            for i in range(last, first, -1):
-                cand = s[first:i+1]
-                try:
-                    return json.loads(cand)
-                except Exception:
-                    continue
-            return {"error": f"JSON parsing failed: {str(e)}", "raw": candidate}
+            return json.loads(s)
+        except json.JSONDecodeError as e:
+            # Try to extract valid JSON by finding balanced braces
+            brace_count = 0
+            for i, char in enumerate(s):
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        candidate = s[:i+1]
+                        try:
+                            return json.loads(candidate)
+                        except:
+                            continue
+            
+            return {"error": f"JSON parsing failed: {str(e)}", "raw": s[:200]}
+            
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": f"Unexpected error: {str(e)}", "raw": output[:200] if output else "No output"}
 
 SCRAPE_FUNC = r'''
 from typing import Dict, Any
@@ -388,15 +417,29 @@ You will receive:
 
 You must:
 1. Follow the provided rules exactly.
-2. Return only a valid JSON object — no extra commentary or formatting.
-3. The JSON must contain:
-   - "questions": [ keys from the questions file"]
+2. Return ONLY a valid JSON object — no extra commentary, markdown formatting, or explanations.
+3. The JSON must contain exactly these keys:
+   - "questions": [array of question strings from the questions file]
    - "code": "..." (Python code that creates a dict called `results` with each question string as a key and its computed answer as the value)
+
+CRITICAL JSON FORMATTING RULES:
+- Use double quotes for all strings, never single quotes
+- No trailing commas
+- No comments in JSON
+- Start response with { and end with }
+- Do not wrap in markdown code blocks
+
 4. Your Python code will run in a sandbox with:
    - pandas, numpy, matplotlib available
    - A helper function `plot_to_base64(max_bytes=100000)` for generating base64-encoded images under 100KB.
 5. When returning plots, always use `plot_to_base64()` to keep image sizes small.
 6. Make sure all variables are defined before use, and the code can run without any undefined references.
+
+Example valid response format:
+{
+  "questions": ["What is the average?", "Show a plot"],
+  "code": "results['What is the average?'] = df['column'].mean()\nplt.figure()\nplt.plot(df['x'], df['y'])\nresults['Show a plot'] = plot_to_base64()"
+}
 """),
         ("human", "{input}"),
         MessagesPlaceholder(variable_name="agent_scratchpad"),
@@ -570,27 +613,35 @@ def run_agent_safely_unified(llm_input: str, pickle_path: str = None) -> Dict:
     - If no pickle_path, falls back to scraping when needed.
     """
     try:
+        logger.info("Starting agent execution...")
         agent_executor = get_agent_executor()
         response = agent_executor.invoke({"input": llm_input}, {"timeout": LLM_TIMEOUT_SECONDS})
         raw_out = response.get("output") or response.get("final_output") or response.get("text") or ""
+        
+        logger.info(f"Agent raw output: {raw_out[:200]}...")
+        
         if not raw_out:
             return {"error": "Agent returned no output"}
 
         parsed = clean_llm_output(raw_out)
         if "error" in parsed:
+            logger.error(f"JSON parsing error: {parsed['error']}")
             return parsed
 
         if "code" not in parsed or "questions" not in parsed:
-            return {"error": f"Invalid agent response: {parsed}"}
+            return {"error": f"Invalid agent response: missing 'code' or 'questions' keys. Got keys: {list(parsed.keys())}"}
 
         code = parsed["code"]
         questions = parsed["questions"]
+        
+        logger.info(f"Extracted {len(questions)} questions")
 
         # If no pickle provided, check if code tries to scrape
         if pickle_path is None:
             urls = re.findall(r"scrape_url_to_dataframe\(\s*['\"](.*?)['\"]\s*\)", code)
             if urls:
                 url = urls[0]
+                logger.info(f"Scraping URL: {url}")
                 tool_resp = scrape_url_to_dataframe(url)
                 if tool_resp.get("status") != "success":
                     return {"error": f"Scrape tool failed: {tool_resp.get('message')}"}
@@ -601,12 +652,13 @@ def run_agent_safely_unified(llm_input: str, pickle_path: str = None) -> Dict:
                 pickle_path = temp_pkl.name
 
         # Execute code with pickle injection if available
+        logger.info("Executing generated code...")
         exec_result = write_and_run_temp_python(code, injected_pickle=pickle_path, timeout=LLM_TIMEOUT_SECONDS)
         if exec_result.get("status") != "success":
             return {"error": f"Execution failed: {exec_result.get('message')}", "raw": exec_result.get("raw")}
 
         results_dict = exec_result.get("result", {})
-        print(f"Results dict: {results_dict}")  
+        logger.info(f"Execution successful, got {len(results_dict)} results")
         return results_dict
 
     except Exception as e:
